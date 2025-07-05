@@ -4,19 +4,11 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
 import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
-// Import the functions you need from the SDKs you need
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
-
-// Your web app's Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyA7QmxkTh4_Py_GgN3BHkPVjk_pP8WK54I",
-  authDomain: "folha-de-ponto-individual.firebaseapp.com",
-  projectId: "folha-de-ponto-individual",
-  storageBucket: "folha-de-ponto-individual.firebasestorage.app",
-  messagingSenderId: "445138363449",
-  appId: "1:445138363449:web:bd22f2874aa1093dfb19e8"
-};
+// --- Firebase Configuration (Secure Method) ---
+// This safely gets the configuration from the hosting environment (Vercel/Canvas)
+// without exposing your keys in the public code.
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 // --- Firebase Initialization ---
 const app = initializeApp(firebaseConfig);
@@ -100,22 +92,26 @@ export default function App() {
         };
     }, []);
     
-  // --- Authentication Effect ---
-useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-        if (user) {
-            setUserId(user.uid);
-        } else {
-            try {
-                await signInAnonymously(auth);
-            } catch (error) {
-                console.error("Error during sign-in:", error);
+    // --- Authentication Effect ---
+    useEffect(() => {
+        const unsubscribe = onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                setUserId(user.uid);
+            } else {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Error during sign-in:", error);
+                }
             }
-        }
-        setIsAuthReady(true);
-    });
-    return () => unsubscribe();
-}, []);
+            setIsAuthReady(true);
+        });
+        return () => unsubscribe();
+    }, []);
 
     const createInitialTimeEntries = (year, month) => {
         const daysInMonth = getDaysInMonth(year, month);
@@ -132,41 +128,40 @@ useEffect(() => {
         return entries;
     };
 
-   // --- Data Loading ---
-useEffect(() => {
-    if (!isAuthReady || !userId) return;
+    // --- Data Loading ---
+    useEffect(() => {
+        if (!isAuthReady || !userId) return;
 
-    setIsLoading(true);
-    const docRef = doc(db, `artifacts/${firebaseConfig.appId}/users/${userId}/timesheets`, docId);
+        setIsLoading(true);
+        const docRef = doc(db, `artifacts/${appId}/users/${userId}/timesheets`, docId);
 
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-        let newEntries = createInitialTimeEntries(selectedYear, selectedMonth);
-        if (docSnap.exists()) {
-            const data = docSnap.data();
-            setServerName(data.serverName || '');
-            setCpf(data.cpf || '');
-            setRole(data.role || '');
-            setRoute(data.route || 'Regular');
-            try {
-                const parsedEntries = JSON.parse(data.timeEntries || '[]');
-                if (Array.isArray(parsedEntries) && parsedEntries.length > 0) {
-                    const savedEntriesMap = new Map(parsedEntries.map(e => [e.day, e]));
-                    newEntries = newEntries.map(entry => savedEntriesMap.has(entry.day) ? { ...entry, ...savedEntriesMap.get(entry.day) } : entry);
-                }
-            } catch (e) { console.error("Error parsing time entries:", e); }
-        } else {
-            setServerName(''); setCpf(''); setRole(''); setRoute('Regular');
-        }
-        setTimeEntries(newEntries);
-        setIsLoading(false);
-    }, (error) => {
-        console.error("Error with snapshot listener:", error);
-        setIsLoading(false);
-    });
+        const unsubscribe = onSnapshot(docRef, (docSnap) => {
+            let newEntries = createInitialTimeEntries(selectedYear, selectedMonth);
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                setServerName(data.serverName || '');
+                setCpf(data.cpf || '');
+                setRole(data.role || '');
+                setRoute(data.route || 'Regular');
+                try {
+                    const parsedEntries = JSON.parse(data.timeEntries || '[]');
+                    if (Array.isArray(parsedEntries) && parsedEntries.length > 0) {
+                        const savedEntriesMap = new Map(parsedEntries.map(e => [e.day, e]));
+                        newEntries = newEntries.map(entry => savedEntriesMap.has(entry.day) ? { ...entry, ...savedEntriesMap.get(entry.day) } : entry);
+                    }
+                } catch (e) { console.error("Error parsing time entries:", e); }
+            } else {
+                setServerName(''); setCpf(''); setRole(''); setRoute('Regular');
+            }
+            setTimeEntries(newEntries);
+            setIsLoading(false);
+        }, (error) => {
+            console.error("Error with snapshot listener:", error);
+            setIsLoading(false);
+        });
 
-    return () => unsubscribe();
-}, [selectedMonth, selectedYear, isAuthReady, userId, firebaseConfig.appId, docId]);
-
+        return () => unsubscribe();
+    }, [selectedMonth, selectedYear, isAuthReady, userId, appId, docId]);
 
     // --- Event Handlers ---
     const handleTimeChange = (index, period, value) => {
@@ -191,25 +186,24 @@ useEffect(() => {
         setCpf(value.slice(0, 14));
     };
 
-// --- Manual Save Function ---
-const handleSave = async () => {
-    if (!isAuthReady || !userId) {
-        setNotification({ show: true, message: 'Autenticação pendente. Tente novamente.', type: 'warn' });
-        return;
-    }
-    
-    const docRef = doc(db, `artifacts/${firebaseConfig.appId}/users/${userId}/timesheets`, docId);
-    const dataToSave = { serverName, cpf, role, route, timeEntries: JSON.stringify(timeEntries || []) };
-    
-    try {
-        await setDoc(docRef, dataToSave, { merge: true });
-        setNotification({ show: true, message: 'Dados salvos com sucesso!', type: 'success' });
-    } catch (error) {
-        console.error("Error saving data: ", error);
-        setNotification({ show: true, message: 'Erro ao salvar os dados.', type: 'error' });
-    }
-};
-
+    // --- Manual Save Function ---
+    const handleSave = async () => {
+        if (!isAuthReady || !userId) {
+            setNotification({ show: true, message: 'Autenticação pendente. Tente novamente.', type: 'warn' });
+            return;
+        }
+        
+        const docRef = doc(db, `artifacts/${appId}/users/${userId}/timesheets`, docId);
+        const dataToSave = { serverName, cpf, role, route, timeEntries: JSON.stringify(timeEntries || []) };
+        
+        try {
+            await setDoc(docRef, dataToSave, { merge: true });
+            setNotification({ show: true, message: 'Dados salvos com sucesso!', type: 'success' });
+        } catch (error) {
+            console.error("Error saving data: ", error);
+            setNotification({ show: true, message: 'Erro ao salvar os dados.', type: 'error' });
+        }
+    };
 
     // --- PDF Generation ---
     const generatePdf = () => {
@@ -555,3 +549,4 @@ const handleSave = async () => {
         </div>
     );
 }
+
